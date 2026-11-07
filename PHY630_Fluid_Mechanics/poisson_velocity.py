@@ -33,4 +33,4 @@ u=np.zeros(n,n)
 # Now, we have an equation that describes the velocity at a given point as dependent on the four adjacent points
 # Going to use scipy's sparse matrix solver to deal with this equation
 
-# start by making our coefficient matrix
+# start by making our coefficient matrix, a (will need lil_matrix function)
