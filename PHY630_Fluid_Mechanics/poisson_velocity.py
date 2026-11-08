@@ -45,8 +45,8 @@ u[~mask]=np.nan # replacing any velocities for points outside the pipe with nan
 # start by making our coefficient matrix
 A=lil_matrix((num_interior,num_interior))
 
-# this is a complicated step; basically matrix A has n rows of n length; each row has a single 4 and four -1s (to represent
-# the specific point we're looking at. Everything else is zero. Since we have n rows, we are essentially creating this 1D array
+# this is a complicated step; basically matrix A has num_interior rows of num_interior length; each row has a single 4 and four -1s (to represent
+# the specific point we're looking at. Everything else is zero. Since we have num_interior rows, we are essentially creating this 1D array
 # with every point eventually being the one we're focusing on.
 for i in range(n):
     for j in range(n):
@@ -68,8 +68,8 @@ B=np.full(num_interior,(G*h**2)/mu)
 print(B)
 
 # now, we use the sparse matrix solver from scipy
-u=spsolve(A,B)
-print(u)
+u_vector=spsolve(A,B) # this is a 1D array
+u[mask]=u_vector # now we applied it onto the 2D array we had
 
 
 #visualize countour field
