@@ -11,6 +11,7 @@ import cv2
 from skimage import feature, color, io
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.optimize import curve_fit
 
 # loading images
 
@@ -92,7 +93,7 @@ suggested_m110_kernel=(21,21) # This is an EXTREMELY imperfect method to finding
 suggested_m31_kernel=(5,5) # Due to time constraints I can't spend too long on this so for now it works
 suggested_m32_kernel=(37,37) # However, it is a source of error to account for in analysis
 
-find_center(m32_img,suggested_m32_kernel,show_center=True)
+find_center(m32_img,suggested_m32_kernel,show_center=False)
 
 # Now deal with the elliptical radii
 
@@ -124,9 +125,180 @@ def elliptical_radius(image,center,q,theta):
     radius=np.sqrt(x_rot**2+(y_rot/q)**2) #calculating radius
     return radius # we return an array containing the radius from center at every point
 
-print(elliptical_radius(m31_gray,find_center(m31_img,suggested_m31_kernel,show_center=True),m31_q,m31_theta))
+print(elliptical_radius(m31_gray,find_center(m31_img,suggested_m31_kernel,show_center=False),m31_q,m31_theta))
 
 # now actually assign each radius a brightness. For every unique r, make a array or something of all the
 # coordinates with that radius. Then, for each array, calculate the brightness (or grayscale intensity) in
 # the main image. After doing that, average (?) the intensities across a given radius and then plot that.
 # In theory, this should give us an exponential curve that we then just compare w/ the sersic profile.
+
+# Way easier method actually: just use histograms on numpy to sort everything. Then average intensities within
+
+def radial_profile(image,radius,bin_width=1):
+    r=radius.ravel() #collapsing radius into 1d array
+    intensity=image.astype(float).ravel() #collapsing intensities into 1d array
+
+    bins=np.arange(0,r.max()+bin_width,bin_width) #making radial bins for histogram
+    intensity_sum,bin_edges=np.histogram(r,bins=bins,weights=intensity) #calculate intensity in each bin
+    pixel_count,_=np.histogram(r,bins=bins) #calculate # of pixels in each bin
+
+    #avg_intensity=intensity_sum/pixel_count #avg intensity calculation
+    avg_intensity=np.divide(intensity_sum,pixel_count,out=np.full_like(intensity_sum,np.nan,dtype=float),where=pixel_count>0)
+    radius_centers=(bin_edges[:-1]+bin_edges[1:])/2
+    return radius_centers, avg_intensity
+
+
+
+m31_center=find_center(m31_img,suggested_m31_kernel,show_center=True)
+m32_center=find_center(m32_img,suggested_m32_kernel,show_center=True)
+m110_center=find_center(m110_img,suggested_m110_kernel,show_center=True)
+
+m31_radius=elliptical_radius(m31_gray,m31_center,m31_q,m31_theta)
+m32_radius=elliptical_radius(m32_gray,m32_center,m32_q,m32_theta)
+m110_radius=elliptical_radius(m110_gray,m110_center,m110_q,m110_theta)
+
+m31_r,m31_I=radial_profile(m31_gray, m31_radius)
+m32_r,m32_I=radial_profile(m32_gray, m32_radius)
+m110_r,m110_I=radial_profile(m110_gray, m110_radius)
+
+
+# Now we just plot these guys!
+def single_plot():
+    plt.figure(figsize=(10,6))
+
+    plt.plot(m31_r,m31_I,label="M31")
+    plt.plot(m32_r,m32_I,label="M32")
+    plt.plot(m110_r,m110_I,label="M110")
+
+    plt.xlabel("Elliptical radius in pixels")
+    plt.ylabel("Avg light intensity")
+    plt.title("Galactic Radial Brightness Profile")
+    plt.legend()
+    plt.grid()
+
+
+
+def separate_plots():
+    fig,axes=plt.subplots(1,3,figsize=(15,5))
+    data=[(m31_r,m31_I,"M31"),(m32_r,m32_I,"M32"),(m110_r,m110_I,"M110")]
+    for ax, (r, I, name) in zip(axes, data):
+        ax.plot(r, I)
+        ax.set_title(name)
+        ax.set_xlabel("Elliptical radius in pixels")
+        ax.set_ylabel("Avg light intensity")
+        ax.grid()
+    plt.tight_layout()
+
+
+
+separate_plots()
+
+
+# Ok now the fun part is fitting this to Sersic Model
+# need to define sersic model first
+
+def sersic_profile(r,Ie,re,n,background):
+    bn=2*n-1/3+4/(405*n)+46/(25515*n**2)
+    return background+Ie*np.exp(-bn*((r/re)**(1/n)-1)) #background is a constant, the brightness that's not from the galaxy
+
+
+# now make the fitting function
+
+def fit_to_sersic_profile(r,intensity):
+    valid=np.isfinite(r) & np.isfinite(intensity) #remove infinities and NaNs
+    r=r[valid]
+    intensity=intensity[valid]
+
+    background_estimate=np.median(intensity[int(0.9*len(intensity)):]) #estimating that the background intensity from outer tenth of profile
+
+    Ie_estimate=(np.max(intensity)-background_estimate)/2
+    re_estimate=r[np.argmin(np.abs(intensity-(background_estimate+Ie_estimate)))]
+    n_estimate=2
+
+    initial_estimate=[Ie_estimate,re_estimate,n_estimate,background_estimate]
+
+    #Fit sersic model
+    parameters,covariance=curve_fit(sersic_profile,r,intensity,p0=initial_estimate,bounds=([0,0.1,0.3,0],[np.inf,np.inf,8,255]),maxfev=20000)
+
+    return parameters,covariance
+
+m31_params,m31_cov=fit_to_sersic_profile(m31_r,m31_I)
+m32_params,m32_cov=fit_to_sersic_profile(m32_r,m32_I)
+m110_params,m110_cov=fit_to_sersic_profile(m110_r,m110_I)
+
+print("M31:",m31_params)
+print("M32:",m32_params)
+print("M110:",m110_params)
+
+
+# now plot these against the other data we already found
+
+def single_plot_w_sersic():
+    plt.figure(figsize=(10,6))
+    plt.scatter(m31_r,m31_I,s=3,label="M31 data") # plotting experimental data
+    plt.scatter(m32_r,m32_I,s=3,label="M32 data")
+    plt.scatter(m110_r,m110_I,s=3,label="M110 data")
+
+    plt.plot(m31_r,sersic_profile(m31_r,*m31_params),label="M31 fit") # plotting expected data
+    plt.plot(m32_r,sersic_profile(m32_r,*m31_params),label="M32 fit")
+    plt.plot(m110_r,sersic_profile(m110_r,*m31_params),label="M110 fit")
+
+    plt.xlabel("Elliptical radius in pixels")
+    plt.ylabel("Avg light intensity")
+    plt.title("Sersic Profile Fits")
+    plt.legend()
+    plt.grid()
+
+
+
+def separate_plots_w_sersic():
+    fig,axes=plt.subplots(1,3,figsize=(15,5))
+    data=[(m31_r,m31_I,sersic_profile(m31_r,*m31_params),"M31"),(m32_r,m32_I,sersic_profile(m32_r,*m32_params),"M32"),(m110_r,m110_I,sersic_profile(m110_r,*m110_params),"M110")]
+    for ax, (r, I, sp, name) in zip(axes, data):
+        ax.scatter(r, I, color="blue", label="Experimental Data")
+        ax.plot(r, sp, color="red", label="Sersic Model")
+        ax.set_title(name)
+        ax.set_xlabel("Elliptical radius in pixels")
+        ax.set_ylabel("Avg light intensity")
+        ax.grid()
+        ax.legend()
+    plt.tight_layout()
+
+
+separate_plots_w_sersic()
+
+
+# RMSE Error calculation time!
+
+def calc_rmse(r,intensity,parameters):
+    valid=np.isfinite(r) & np.isfinite(intensity)
+    r=r[valid]
+    intensity=intensity[valid]
+    predicted=sersic_profile(r,*parameters)
+    residuals=intensity-predicted
+    rmse=np.sqrt(np.mean(residuals**2))
+    return rmse
+
+def calc_r_squared(r, intensity, parameters):
+    valid=np.isfinite(r) & np.isfinite(intensity)
+    r=r[valid]
+    intensity=intensity[valid]
+    predicted=sersic_profile(r,*parameters)
+    ss_res=np.sum((intensity-predicted)**2)
+    ss_tot=np.sum((intensity-np.mean(intensity))**2)
+    return 1 - ss_res / ss_tot
+
+
+m31_rmse=calc_rmse(m31_r,m31_I,m31_params)
+m32_rmse=calc_rmse(m32_r,m32_I,m32_params)
+m110_rmse=calc_rmse(m110_r,m110_I,m110_params)
+
+m31_r_error=calc_r_squared(m31_r,m31_I,m31_params)
+m32_r_error=calc_r_squared(m32_r,m32_I,m32_params)
+m110_r_error=calc_r_squared(m110_r,m110_I,m110_params)
+
+print("M31 error", m31_rmse, m31_r_error)
+print("M32 error", m32_rmse, m32_r_error)
+print("M110 error", m110_rmse, m110_r_error)
+
+plt.show()
